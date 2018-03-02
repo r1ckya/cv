@@ -3,7 +3,7 @@ from os import environ
 from os.path import join
 from pickle import load
 from sys import argv
-
+import numpy as np
 
 def check_test(output_dir, gt_dir):
     correct = 0
