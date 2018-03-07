@@ -1,11 +1,12 @@
 
 # coding: utf-8
 
-# In[51]:
+# In[106]:
 
 
 import numpy as np
 from skimage import io
+from itertools import accumulate, chain
 
 def build_ymap(img):
      return img[:, :, 0] * 0.299 + img[:, :, 1] * 0.587 + img[:, :, 2] * 0.114
@@ -19,37 +20,21 @@ def grad_norm(ymap):
 def build_seam_map(grad):
     ret = grad.copy()
     for cur, prev in zip(ret[1:], ret[:-1]):
-        cur[1:-1] += np.vstack((prev[:-2], prev[1:-1], prev[2:])).min(axis=0)
+        cur[1:-1] += np.minimum(np.minimum(prev[:-2], prev[1:-1]), prev[2:])
         cur[0] += min(prev[0], prev[1])
         cur[-1] += min(prev[-1], prev[-2])
     return ret
 
-def rem_seam(img, idxs):
-    n, m = img.shape[:2]
-    rem = np.hstack((idxs * 3, idxs * 3 + 1, idxs * 3 + 2))
-    return np.delete(img, rem).reshape(n, m - 1, 3)
-
 def get_seam(seam_map):
-    n = seam_map.shape[0] - 1
-    m = seam_map.shape[1]
-    j = np.argmin(seam_map[n])
-    idxs = [n * m + j]
-    n -= 1
-    for cur in seam_map[-2::-1]:
-        if j == 0:
-            if cur[0] > cur[1]:
-                j = 1
-        else:
-            j += np.argmin(cur[j - 1: j + 2]) - 1
-        idxs += [n * m + j]
-        n -= 1
-    return np.array(idxs)
+    return np.fromiter(accumulate(chain([seam_map[-1].argmin()], seam_map[-2::-1]),
+                                  lambda x, y: x + y[x - 1: x + 2].argmin() - 1 if x > 0 else y[:2].argmin()), 
+                       dtype=np.int32) + np.arange(seam_map.shape[0] - 1, -1, -1) * seam_map.shape[1]
 
 def add_seam(img, idxs):
     n, m = img.shape[:2]
     idxs1 = idxs + 1 - (idxs % m == m - 1)
     return np.dstack((np.insert(it, idxs, (it[idxs] + it[idxs1]) // 2).reshape(n, m + 1)
-         for it in map(np.ravel, np.split(img, 3, 2))))
+         for it in map(np.ravel, np.dsplit(img, 3))))
 
 def seam_carve(img, mode='horizontal shrink', mask=None):
     if mask is None:
@@ -69,11 +54,11 @@ def seam_carve(img, mode='horizontal shrink', mask=None):
     idxs = get_seam(seam_map)
     seam_mask.ravel()[idxs] = 1
     if mode.split()[1] == 'shrink':
-        mask = np.delete(mask, idxs).reshape(n, m - 1)
-        img = rem_seam(img, idxs)
+        mask = np.delete(mask, idxs)
+        img = np.delete(img, idxs, axis=2)
     else:
         mask.ravel()[idxs] = 1
-        mask = np.insert(mask.ravel(), idxs, np.ones(n)).reshape(n, m + 1)
+        mask = np.insert(mask, idxs, np.ones(n)).reshape(n, m + 1)
         img = add_seam(img, idxs)
     if mode.split()[0] == 'vertical':
         img = img.transpose(1, 0, 2)
@@ -82,14 +67,87 @@ def seam_carve(img, mode='horizontal shrink', mask=None):
     return img, mask, seam_mask
 
 
-# In[52]:
+# In[109]:
 
 
-a = np.arange(5)
+x = np.arange(3).reshape(1, 1, 3)
+a, b, c = np.dsplit(x, 3)
 
 
-# In[58]:
+# In[110]:
 
 
-a[-1::-1]
+x
+
+
+# In[111]:
+
+
+a
+
+
+# In[112]:
+
+
+a[:, :, 0] = 5
+
+
+# In[113]:
+
+
+a
+
+
+# In[114]:
+
+
+x
+
+
+# In[116]:
+
+
+g = np.vstack((a, b))
+
+
+# In[117]:
+
+
+g.shape
+
+
+# In[118]:
+
+
+g[0, 0, 0] = 4
+
+
+# In[119]:
+
+
+x
+
+
+# In[124]:
+
+
+g = np.array([1,0, 0, 1])
+
+
+# In[125]:
+
+
+g
+
+
+# In[122]:
+
+
+np.delete(g.ravel(), 0)
+
+
+# In[127]:
+
+
+g == 1
 
