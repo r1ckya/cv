@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[5]:
+# In[17]:
 
 
 import numpy as np
@@ -19,9 +19,9 @@ def grad_norm(ymap):
 def build_seam_map(grad):
     ret = grad.copy()
     for i in range(1, ret.shape[0]):
-        ret[i, 0] += ret[i - 1, :2].min()
-        for j in range(1, ret.shape[1]):
-            ret[i, j] += ret[i - 1, j - 1: j + 2].min()
+        ret[i, 1:-1] += np.vstack((ret[i - 1, :-2], ret[i - 1, 1:-1], ret[i - 1, 2:])).min(axis=0)
+        ret[i, 0] += min(ret[i - 1, 0], ret[i - 1, 1])
+        ret[i, -1] += min(ret[i - 1, -1], ret[i - 1, -2])
     return ret
 
 def rem_seam(img, idxs):
@@ -33,7 +33,7 @@ def get_seam(seam_map):
     n = seam_map.shape[0] - 1
     m = seam_map.shape[1]
     j = np.argmin(seam_map[n])
-    idxs = np.array([n * m + j], dtype=np.int32)
+    idxs = [n * m + j]
     n -= 1
     while n >= 0:
         if j == 0:
@@ -41,13 +41,13 @@ def get_seam(seam_map):
                 j = 1
         else:
             j += np.argmin(seam_map[n, j - 1: j + 2]) - 1
-        idxs = np.append(idxs, n * m + j)
+        idxs += [n * m + j]
         n -= 1
-    return idxs
+    return np.array(idxs)
 
 def add_seam(img, idxs):
     n, m = img.shape[:2]
-    idxs1 = idxs + 1 - ((idxs + 1) % m == 0)
+    idxs1 = idxs + 1 - (idxs % m == m - 1)
     return np.dstack((np.insert(it, idxs, (it[idxs] + it[idxs1]) // 2).reshape(n, m + 1)
          for it in map(np.ravel, np.split(img, 3, 2))))
 
