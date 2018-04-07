@@ -1,262 +1,180 @@
-<!DOCTYPE html>
-<html><head>
-<meta http-equiv="content-type" content="text/html; charset=UTF-8">
-    <meta charset="utf-8">
+from matplotlib import pyplot as plt
+from glob import glob
+import numpy as np
+from keras.models import Sequential
+from keras.optimizers import SGD, Adam
+from keras.layers import Conv2D, MaxPooling2D, Flatten, Dropout, Dense, Activation
+from keras.layers.normalization import BatchNormalization
+from keras.models import load_model
+from sklearn.model_selection import train_test_split
+from keras.backend.tensorflow_backend import set_session
+from keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+import tensorflow as tf
+from keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint
+from skimage.util import random_noise, crop
+from sklearn.utils import shuffle
+from skimage.transform import resize, rotate
+from os.path import join, split
 
-    <title>detection.py</title>
-    <link id="favicon" rel="shortcut icon" type="image/x-icon" href="http://localhost:8889/static/base/images/favicon-file.ico?v=e2776a7f45692c839d6eea7d7ff6f3b2">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <link rel="stylesheet" href="detection_files/jquery-ui.css" type="text/css">
-    <link rel="stylesheet" href="detection_files/jquery.css" type="text/css">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+IMSIZE = 100
+flip_indices = [
+                (0, 6), (1, 7), (2, 4), (3, 5),
+                (10, 16), (11, 17), (12, 14), (13, 15),
+                (8, 18), (9, 19), (22, 26), (23, 27)
+                ]
+
+class Generator(object):
+    import numpy as np
+    def __init__(self,
+                 X, 
+                 y,
+                 bs,
+                 flip_ratio,
+                 rotate_ratio,
+                 noise_ratio,
+                 zoom_ratio,
+                 zoom_range,
+                 flip_indices):
+        self.X = X
+        self.y = y
+        self.bs = bs
+        self.flip_ratio = flip_ratio
+        self.rotate_ratio = rotate_ratio
+        self.noise_ratio = noise_ratio
+        self.zoom_ratio = zoom_ratio
+        self.zoom_range = zoom_range
+        
+        self.size = X.shape[0]
+        self.flip_indices = flip_indices
     
+    def _random_indices(self, ratio):
+        size = int(self.bs * ratio)
+        return np.random.choice(self.bs, size, replace=False)
     
-<link rel="stylesheet" href="detection_files/codemirror.css">
-<link rel="stylesheet" href="detection_files/dialog.css">
-
-    <link rel="stylesheet" href="detection_files/style.css" type="text/css">
+    def flip(self):
+        indices = self._random_indices(self.flip_ratio)
+        self.inputs[indices] = self.inputs[indices, :, ::-1]
+        self.targets[indices, ::2] = self.targets[indices, ::2] * -1
+        for a, b in self.flip_indices:
+            self.targets[indices, a], self.targets[indices, b] = \
+            self.targets[indices, b], self.targets[indices, a]
     
-
-    <link rel="stylesheet" href="detection_files/custom.css" type="text/css">
-    <script src="detection_files/promise.js" type="text/javascript" charset="utf-8"></script>
-    <script src="detection_files/index_003.js" type="text/javascript"></script>
-    <script src="detection_files/index_002.js" type="text/javascript"></script>
-    <script src="detection_files/index.js" type="text/javascript"></script>
-    <script src="detection_files/require.js" type="text/javascript" charset="utf-8"></script>
-    <script>
-      require.config({
-          
-          urlArgs: "v=20180407202709",
-          
-          baseUrl: '/static/',
-          paths: {
-            'auth/js/main': 'auth/js/main.min',
-            custom : '/custom',
-            nbextensions : '/nbextensions',
-            kernelspecs : '/kernelspecs',
-            underscore : 'components/underscore/underscore-min',
-            backbone : 'components/backbone/backbone-min',
-            jed: 'components/jed/jed',
-            jquery: 'components/jquery/jquery.min',
-            json: 'components/requirejs-plugins/src/json',
-            text: 'components/requirejs-text/text',
-            bootstrap: 'components/bootstrap/js/bootstrap.min',
-            bootstraptour: 'components/bootstrap-tour/build/js/bootstrap-tour.min',
-            'jquery-ui': 'components/jquery-ui/ui/minified/jquery-ui.min',
-            moment: 'components/moment/min/moment-with-locales',
-            codemirror: 'components/codemirror',
-            termjs: 'components/xterm.js/dist/xterm',
-            typeahead: 'components/jquery-typeahead/dist/jquery.typeahead.min',
-          },
-          map: { // for backward compatibility
-              "*": {
-                  "jqueryui": "jquery-ui",
-              }
-          },
-          shim: {
-            typeahead: {
-              deps: ["jquery"],
-              exports: "typeahead"
-            },
-            underscore: {
-              exports: '_'
-            },
-            backbone: {
-              deps: ["underscore", "jquery"],
-              exports: "Backbone"
-            },
-            bootstrap: {
-              deps: ["jquery"],
-              exports: "bootstrap"
-            },
-            bootstraptour: {
-              deps: ["bootstrap"],
-              exports: "Tour"
-            },
-            "jquery-ui": {
-              deps: ["jquery"],
-              exports: "$"
-            }
-          },
-          waitSeconds: 30,
-      });
-
-      require.config({
-          map: {
-              '*':{
-                'contents': 'services/contents',
-              }
-          }
-      });
-
-      // error-catching custom.js shim.
-      define("custom", function (require, exports, module) {
-          try {
-              var custom = require('custom/custom');
-              console.debug('loaded custom.js');
-              return custom;
-          } catch (e) {
-              console.error("error loading custom.js", e);
-              return {};
-          }
-      })
-
-    document.nbjs_translations = {"domain": "nbjs", "locale_data": {"nbjs": {"": {"domain": "nbjs"}}}};
-    </script>
-
+    def rotate(self):
+        indices = self._random_indices(self.rotate_ratio)
+        self.targets = self.targets.reshape(len(self.targets), self.y.shape[1] // 2, 2)
+        for i in indices:
+            angle = np.random.randint(-10, 10)
+            self.inputs[i] = rotate(self.inputs[i], angle)
+            angle = angle * np.pi / 180
+            C = [[np.cos(angle), -np.sin(angle)],
+                 [np.sin(angle), np.cos(angle)]]
+            self.targets[i] = np.dot(self.targets[i], C)
+        self.targets = self.targets.reshape(-1, self.y.shape[1])
     
+    def zoom(self):
+        indices = self._random_indices(self.zoom_ratio)
+        for i in indices:
+            a, b = np.random.randint(0, self.zoom_range, 2)
+            self.targets[i] = self.targets[i] * (IMSIZE / 2) + (IMSIZE / 2)
+            self.targets[i, ::2] = self.targets[i, ::2] - b
+            self.targets[i, 1::2] = self.targets[i, 1::2] - a
+            self.targets[i] = 2 * (self.targets[i] - (IMSIZE - self.zoom_range) / 2) / (IMSIZE - self.zoom_range)
+            self.inputs[i] = resize(self.inputs[i, a:-self.zoom_range+a, b:-self.zoom_range+b], (IMSIZE, IMSIZE))
+            
+    def noise(self):
+        indices = self._random_indices(self.noise_ratio)
+        for i in indices:
+            self.inputs[i] = random_noise(self.inputs[i])
     
+    def generate(self):
+        while True:
+            self.X, self.y = shuffle(self.X, self.y)
+            start = 0
+            stop = self.bs
+            for i in range(self.size // self.bs):
+                self.inputs = self.X[start:stop].copy()
+                self.targets = self.y[start:stop].copy()
+                start += self.bs
+                stop += self.bs
+                self.flip()
+                self.rotate()
+                self.noise()
+                self.zoom()
+                yield (self.inputs, self.targets)
+                
+def CNN():
+    model = Sequential()
+    model.add(Conv2D(32, (3, 3), input_shape=(IMSIZE, IMSIZE, 3)))
+    model.add(Activation('relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
 
-<script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="services/contents" src="detection_files/contents.js"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="custom/custom" src="detection_files/custom.js"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="codemirror/mode/python/python" src="detection_files/python.js"></script></head>
-
-<body class="edit_app" data-base-url="/" data-file-path="detection.py" data-jupyter-api-token="cee7e0d55be0bc1fb51b60e851513b408385ff9c9fb0b794" dir="ltr">
-
-<noscript>
-    <div id='noscript'>
-      Jupyter Notebook requires JavaScript.<br>
-      Please enable it to proceed. 
-  </div>
-</noscript>
-
-<div id="header" style="display: block;">
-  <div id="header-container" class="container">
-  <div id="ipython_notebook" class="nav navbar-brand"><a href="http://localhost:8889/tree?token=cee7e0d55be0bc1fb51b60e851513b408385ff9c9fb0b794" title="dashboard">
-      <img src="detection_files/logo.png" alt="Jupyter Notebook">
-  </a></div>
-
-  
-
-<span id="save_widget" class="pull-left save_widget">
-    <span class="filename">detection.py</span>
-    <div class="dirty-indicator-clean" title="No changes to save"></div><span class="last_modified" title="Sat, Apr 7, 2018 10:30 PM">21 minutes ago</span>
-</span>
-
-
-  
-  
-  
-  
-
-    <span id="login_widget">
-      
-        <button id="logout" class="btn btn-sm navbar-btn">Logout</button>
-      
-    </span>
-
-  
-
-  
-  
-  </div>
-  <div class="header-bar"></div>
-
-  
-
-<div id="menubar-container" class="container">
-  <div id="menubar">
-    <div id="menus" class="navbar navbar-default" role="navigation">
-      <div class="container-fluid">
-          <p class="navbar-text indicator_area">
-          <span id="current-mode" title="The current language is Python">Python</span>
-          </p>
-        <button type="button" class="btn btn-default navbar-toggle" data-toggle="collapse" data-target=".navbar-collapse">
-          <i class="fa fa-bars"></i>
-          <span class="navbar-text">Menu</span>
-        </button>
-        <ul class="nav navbar-nav navbar-right">
-          <li id="notification_area"><div id="notification_save" class="notification_widget btn btn-xs navbar-btn" style="display: none;"><span></span></div></li>
-        </ul>
-        <div class="navbar-collapse collapse">
-          <ul class="nav navbar-nav">
-            <li class="dropdown"><a href="#" class="dropdown-toggle" data-toggle="dropdown" aria-expanded="false">File</a>
-              <ul id="file-menu" class="dropdown-menu">
-                <li id="new-file"><a href="#">New</a></li>
-                <li id="save-file"><a href="#">Save</a></li>
-                <li id="rename-file"><a href="#">Rename</a></li>
-                <li id="download-file"><a href="#">Download</a></li>
-              </ul>
-            </li>
-            <li class="dropdown"><a href="#" class="dropdown-toggle" data-toggle="dropdown" aria-expanded="false">Edit</a>
-              <ul id="edit-menu" class="dropdown-menu">
-                <li id="menu-find"><a href="#">Find</a></li>
-                <li id="menu-replace"><a href="#">Find &amp; Replace</a></li>
-                <li class="divider"></li>
-                <li class="dropdown-header">Key Map</li>
-                <li id="menu-keymap-default" class="selected-keymap"><a href="#">Default<i class="fa"></i></a></li>
-                <li id="menu-keymap-sublime"><a href="#">Sublime Text<i class="fa"></i></a></li>
-                <li id="menu-keymap-vim"><a href="#">Vim<i class="fa"></i></a></li>
-                <li id="menu-keymap-emacs"><a href="#">emacs<i class="fa"></i></a></li>
-              </ul>
-            </li>
-            <li class="dropdown open"><a href="#" class="dropdown-toggle" data-toggle="dropdown" aria-expanded="true">View</a>
-              <ul id="view-menu" class="dropdown-menu">
-              <li id="toggle_header" title="Show/Hide the logo and notebook title (above menu bar)">
-              <a href="#">Toggle Header</a></li>
-              <li id="menu-line-numbers"><a href="#">Toggle Line Numbers</a></li>
-              </ul>
-            </li>
-            <li class="dropdown"><a href="#" class="dropdown-toggle" data-toggle="dropdown">Language</a>
-              <ul id="mode-menu" class="dropdown-menu">
-              <li><a href="#" title="Set language to APL">APL</a></li><li><a href="#" title="Set language to PGP">PGP</a></li><li><a href="#" title="Set language to ASN.1">ASN.1</a></li><li><a href="#" title="Set language to Asterisk">Asterisk</a></li><li><a href="#" title="Set language to Brainfuck">Brainfuck</a></li><li><a href="#" title="Set language to C">C</a></li><li><a href="#" title="Set language to C++">C++</a></li><li><a href="#" title="Set language to Cobol">Cobol</a></li><li><a href="#" title="Set language to C#">C#</a></li><li><a href="#" title="Set language to Clojure">Clojure</a></li><li><a href="#" title="Set language to ClojureScript">ClojureScript</a></li><li><a href="#" title="Set language to Closure Stylesheets (GSS)">Closure Stylesheets (GSS)</a></li><li><a href="#" title="Set language to CMake">CMake</a></li><li><a href="#" title="Set language to CoffeeScript">CoffeeScript</a></li><li><a href="#" title="Set language to Common Lisp">Common Lisp</a></li><li><a href="#" title="Set language to Cypher">Cypher</a></li><li><a href="#" title="Set language to Cython">Cython</a></li><li><a href="#" title="Set language to Crystal">Crystal</a></li><li><a href="#" title="Set language to CSS">CSS</a></li><li><a href="#" title="Set language to CQL">CQL</a></li><li><a href="#" title="Set language to D">D</a></li><li><a href="#" title="Set language to Dart">Dart</a></li><li><a href="#" title="Set language to diff">diff</a></li><li><a href="#" title="Set language to Django">Django</a></li><li><a href="#" title="Set language to Dockerfile">Dockerfile</a></li><li><a href="#" title="Set language to DTD">DTD</a></li><li><a href="#" title="Set language to Dylan">Dylan</a></li><li><a href="#" title="Set language to EBNF">EBNF</a></li><li><a href="#" title="Set language to ECL">ECL</a></li><li><a href="#" title="Set language to edn">edn</a></li><li><a href="#" title="Set language to Eiffel">Eiffel</a></li><li><a href="#" title="Set language to Elm">Elm</a></li><li><a href="#" title="Set language to Embedded Javascript">Embedded Javascript</a></li><li><a href="#" title="Set language to Embedded Ruby">Embedded Ruby</a></li><li><a href="#" title="Set language to Erlang">Erlang</a></li><li><a href="#" title="Set language to Factor">Factor</a></li><li><a href="#" title="Set language to FCL">FCL</a></li><li><a href="#" title="Set language to Forth">Forth</a></li><li><a href="#" title="Set language to Fortran">Fortran</a></li><li><a href="#" title="Set language to F#">F#</a></li><li><a href="#" title="Set language to Gas">Gas</a></li><li><a href="#" title="Set language to Gherkin">Gherkin</a></li><li><a href="#" title="Set language to GitHub Flavored Markdown">GitHub Flavored Markdown</a></li><li><a href="#" title="Set language to Go">Go</a></li><li><a href="#" title="Set language to Groovy">Groovy</a></li><li><a href="#" title="Set language to HAML">HAML</a></li><li><a href="#" title="Set language to Haskell">Haskell</a></li><li><a href="#" title="Set language to Haskell (Literate)">Haskell (Literate)</a></li><li><a href="#" title="Set language to Haxe">Haxe</a></li><li><a href="#" title="Set language to HXML">HXML</a></li><li><a href="#" title="Set language to ASP.NET">ASP.NET</a></li><li><a href="#" title="Set language to HTML">HTML</a></li><li><a href="#" title="Set language to HTTP">HTTP</a></li><li><a href="#" title="Set language to IDL">IDL</a></li><li><a href="#" title="Set language to Pug">Pug</a></li><li><a href="#" title="Set language to Java">Java</a></li><li><a href="#" title="Set language to Java Server Pages">Java Server Pages</a></li><li><a href="#" title="Set language to JavaScript">JavaScript</a></li><li><a href="#" title="Set language to JSON">JSON</a></li><li><a href="#" title="Set language to JSON-LD">JSON-LD</a></li><li><a href="#" title="Set language to JSX">JSX</a></li><li><a href="#" title="Set language to Jinja2">Jinja2</a></li><li><a href="#" title="Set language to Julia">Julia</a></li><li><a href="#" title="Set language to Kotlin">Kotlin</a></li><li><a href="#" title="Set language to LESS">LESS</a></li><li><a href="#" title="Set language to LiveScript">LiveScript</a></li><li><a href="#" title="Set language to Lua">Lua</a></li><li><a href="#" title="Set language to Markdown">Markdown</a></li><li><a href="#" title="Set language to mIRC">mIRC</a></li><li><a href="#" title="Set language to MariaDB SQL">MariaDB SQL</a></li><li><a href="#" title="Set language to Mathematica">Mathematica</a></li><li><a href="#" title="Set language to Modelica">Modelica</a></li><li><a href="#" title="Set language to MUMPS">MUMPS</a></li><li><a href="#" title="Set language to MS SQL">MS SQL</a></li><li><a href="#" title="Set language to mbox">mbox</a></li><li><a href="#" title="Set language to MySQL">MySQL</a></li><li><a href="#" title="Set language to Nginx">Nginx</a></li><li><a href="#" title="Set language to NSIS">NSIS</a></li><li><a href="#" title="Set language to NTriples">NTriples</a></li><li><a href="#" title="Set language to Objective C">Objective C</a></li><li><a href="#" title="Set language to OCaml">OCaml</a></li><li><a href="#" title="Set language to Octave">Octave</a></li><li><a href="#" title="Set language to Oz">Oz</a></li><li><a href="#" title="Set language to Pascal">Pascal</a></li><li><a href="#" title="Set language to PEG.js">PEG.js</a></li><li><a href="#" title="Set language to Perl">Perl</a></li><li><a href="#" title="Set language to PHP">PHP</a></li><li><a href="#" title="Set language to Pig">Pig</a></li><li><a href="#" title="Set language to Plain Text">Plain Text</a></li><li><a href="#" title="Set language to PLSQL">PLSQL</a></li><li><a href="#" title="Set language to PowerShell">PowerShell</a></li><li><a href="#" title="Set language to Properties files">Properties files</a></li><li><a href="#" title="Set language to ProtoBuf">ProtoBuf</a></li><li><a href="#" title="Set language to Python">Python</a></li><li><a href="#" title="Set language to Puppet">Puppet</a></li><li><a href="#" title="Set language to Q">Q</a></li><li><a href="#" title="Set language to R">R</a></li><li><a href="#" title="Set language to reStructuredText">reStructuredText</a></li><li><a href="#" title="Set language to RPM Changes">RPM Changes</a></li><li><a href="#" title="Set language to RPM Spec">RPM Spec</a></li><li><a href="#" title="Set language to Ruby">Ruby</a></li><li><a href="#" title="Set language to Rust">Rust</a></li><li><a href="#" title="Set language to SAS">SAS</a></li><li><a href="#" title="Set language to Sass">Sass</a></li><li><a href="#" title="Set language to Scala">Scala</a></li><li><a href="#" title="Set language to Scheme">Scheme</a></li><li><a href="#" title="Set language to SCSS">SCSS</a></li><li><a href="#" title="Set language to Shell">Shell</a></li><li><a href="#" title="Set language to Sieve">Sieve</a></li><li><a href="#" title="Set language to Slim">Slim</a></li><li><a href="#" title="Set language to Smalltalk">Smalltalk</a></li><li><a href="#" title="Set language to Smarty">Smarty</a></li><li><a href="#" title="Set language to Solr">Solr</a></li><li><a href="#" title="Set language to Soy">Soy</a></li><li><a href="#" title="Set language to SPARQL">SPARQL</a></li><li><a href="#" title="Set language to Spreadsheet">Spreadsheet</a></li><li><a href="#" title="Set language to SQL">SQL</a></li><li><a href="#" title="Set language to SQLite">SQLite</a></li><li><a href="#" title="Set language to Squirrel">Squirrel</a></li><li><a href="#" title="Set language to Stylus">Stylus</a></li><li><a href="#" title="Set language to Swift">Swift</a></li><li><a href="#" title="Set language to sTeX">sTeX</a></li><li><a href="#" title="Set language to LaTeX">LaTeX</a></li><li><a href="#" title="Set language to SystemVerilog">SystemVerilog</a></li><li><a href="#" title="Set language to Tcl">Tcl</a></li><li><a href="#" title="Set language to Textile">Textile</a></li><li><a href="#" title="Set language to TiddlyWiki ">TiddlyWiki </a></li><li><a href="#" title="Set language to Tiki wiki">Tiki wiki</a></li><li><a href="#" title="Set language to TOML">TOML</a></li><li><a href="#" title="Set language to Tornado">Tornado</a></li><li><a href="#" title="Set language to troff">troff</a></li><li><a href="#" title="Set language to TTCN">TTCN</a></li><li><a href="#" title="Set language to TTCN_CFG">TTCN_CFG</a></li><li><a href="#" title="Set language to Turtle">Turtle</a></li><li><a href="#" title="Set language to TypeScript">TypeScript</a></li><li><a href="#" title="Set language to TypeScript-JSX">TypeScript-JSX</a></li><li><a href="#" title="Set language to Twig">Twig</a></li><li><a href="#" title="Set language to Web IDL">Web IDL</a></li><li><a href="#" title="Set language to VB.NET">VB.NET</a></li><li><a href="#" title="Set language to VBScript">VBScript</a></li><li><a href="#" title="Set language to Velocity">Velocity</a></li><li><a href="#" title="Set language to Verilog">Verilog</a></li><li><a href="#" title="Set language to VHDL">VHDL</a></li><li><a href="#" title="Set language to Vue.js Component">Vue.js Component</a></li><li><a href="#" title="Set language to XML">XML</a></li><li><a href="#" title="Set language to XQuery">XQuery</a></li><li><a href="#" title="Set language to Yacas">Yacas</a></li><li><a href="#" title="Set language to YAML">YAML</a></li><li><a href="#" title="Set language to Z80">Z80</a></li><li><a href="#" title="Set language to mscgen">mscgen</a></li><li><a href="#" title="Set language to xu">xu</a></li><li><a href="#" title="Set language to msgenny">msgenny</a></li></ul>
-            </li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="lower-header-bar"></div>
-
-
-</div>
-
-<div id="site" style="height: 875px; display: block;">
-
-
-<div id="texteditor-backdrop">
-<div id="texteditor-container" class="container"><div class="CodeMirror cm-s-ipython CodeMirror-wrap" style="height: 835px;"><div style="overflow: hidden; position: relative; width: 3px; height: 0px; top: 583.6px; left: 459.6px;"><textarea style="position: absolute; bottom: -1em; padding: 0px; width: 1px; height: 1em; outline: medium none currentcolor;" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="0" wrap="off"></textarea></div><div class="CodeMirror-vscrollbar" cm-not-content="true" style="display: block; bottom: 0px;"><div style="min-width: 1px; height: 3146px;"></div></div><div class="CodeMirror-hscrollbar" cm-not-content="true"><div style="height: 100%; min-height: 1px; width: 0px;"></div></div><div class="CodeMirror-scrollbar-filler" cm-not-content="true"></div><div class="CodeMirror-gutter-filler" cm-not-content="true"></div><div class="CodeMirror-scroll" tabindex="-1" draggable="true"><div class="CodeMirror-sizer" style="margin-left: 38px; margin-bottom: -5px; border-right-width: 25px; min-height: 3139px; padding-right: 5px; padding-bottom: 0px;"><div style="position: relative; top: 1887px;"><div class="CodeMirror-lines" role="presentation"><div style="position: relative; outline: medium none currentcolor;" role="presentation"><div class="CodeMirror-measure"><pre>x</pre></div><div class="CodeMirror-measure"></div><div style="position: relative; z-index: 1;"></div><div class="CodeMirror-cursors" style=""><div class="CodeMirror-cursor" style="left: 421.6px; top: 935px; height: 17px;">&nbsp;</div></div><div class="CodeMirror-code" role="presentation" style=""><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">110</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation"><span cm-text="">​</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">111</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Conv2D</span>(<span class="cm-number">64</span>, (<span class="cm-number">2</span>, <span class="cm-number">2</span>)))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">112</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Activation</span>(<span class="cm-string">'relu'</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">113</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">MaxPooling2D</span>(<span class="cm-variable">pool_size</span>=(<span class="cm-number">2</span>, <span class="cm-number">2</span>)))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">114</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">115</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Conv2D</span>(<span class="cm-number">128</span>, (<span class="cm-number">2</span>, <span class="cm-number">2</span>)))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">116</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Activation</span>(<span class="cm-string">'relu'</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">117</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">MaxPooling2D</span>(<span class="cm-variable">pool_size</span>=(<span class="cm-number">2</span>, <span class="cm-number">2</span>)))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">118</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">119</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Flatten</span>())</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">120</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">121</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Dense</span>(<span class="cm-number">1000</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">122</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Activation</span>(<span class="cm-string">'relu'</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">123</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Dropout</span>(<span class="cm-number">0.5</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">124</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Dense</span>(<span class="cm-number">1000</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">125</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Activation</span>(<span class="cm-string">'relu'</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">126</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Dropout</span>(<span class="cm-number">0.5</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">127</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">add</span>(<span class="cm-variable">Dense</span>(<span class="cm-number">28</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">128</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">129</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-keyword">return</span> <span class="cm-variable">model</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">130</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation"><span cm-text="">​</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">131</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation"><span class="cm-keyword">def</span> <span class="cm-def">cosine_lr</span>(<span class="cm-variable">start</span>, <span class="cm-variable">stop</span>, <span class="cm-variable">epochs</span>, <span class="cm-variable">n</span>):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">132</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">epochs</span> /= <span class="cm-variable">n</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">133</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">res</span> = <span class="cm-variable">stop</span> <span class="cm-operator">+</span> (<span class="cm-variable">start</span> <span class="cm-operator">-</span> <span class="cm-variable">stop</span>) <span class="cm-operator">/</span> <span class="cm-number">2</span> <span class="cm-operator">*</span> (<span class="cm-number">1</span>  <span class="cm-operator">+</span> <span class="cm-variable">np</span>.<span class="cm-property">cos</span>(<span class="cm-variable">np</span>.<span class="cm-property">linspace</span>(<span class="cm-number">0</span>, <span class="cm-variable">epochs</span>, <span class="cm-variable">epochs</span>) <span class="cm-operator">*</span> <span class="cm-variable">np</span>.<span class="cm-property">pi</span> <span class="cm-operator">/</span> <span class="cm-variable">epochs</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">134</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">res</span> = <span class="cm-variable">np</span>.<span class="cm-property">concatenate</span>([<span class="cm-variable">res</span> <span class="cm-keyword">for</span> <span class="cm-variable">i</span> <span class="cm-keyword">in</span> <span class="cm-builtin">range</span>(<span class="cm-variable">n</span>)])</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">135</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-keyword">return</span> <span class="cm-variable">res</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">136</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation"><span cm-text="">​</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">137</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation"><span class="cm-keyword">def</span> <span class="cm-def">train_detector</span>(<span class="cm-variable">y_dict</span>, <span class="cm-variable">img_dir</span>, <span class="cm-variable">fast_train</span>=<span class="cm-keyword">True</span>):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">138</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">139</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span> = <span class="cm-variable">CNN</span>()</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">140</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">model</span>.<span class="cm-property">compile</span>(<span class="cm-variable">loss</span>=<span class="cm-string">'mse'</span>, <span class="cm-variable">optimizer</span>=<span class="cm-string">'adam'</span>)</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">141</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">142</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">mega_bs</span> = <span class="cm-number">1000</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">143</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">items</span> = <span class="cm-builtin">list</span>(<span class="cm-variable">y_dict</span>.<span class="cm-property">items</span>())</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">144</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-keyword">for</span> <span class="cm-variable">i</span> <span class="cm-keyword">in</span> <span class="cm-builtin">range</span>(<span class="cm-builtin">int</span>(<span class="cm-variable">np</span>.<span class="cm-property">ceil</span>(<span class="cm-builtin">len</span>(<span class="cm-variable">y_dict</span>) <span class="cm-operator">/</span> <span class="cm-variable">mega_bs</span>))):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">145</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">bs</span> = <span class="cm-builtin">min</span>(<span class="cm-builtin">len</span>(<span class="cm-variable">y_dict</span>) <span class="cm-operator">-</span> <span class="cm-variable">i</span> <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>, <span class="cm-variable">mega_bs</span>)</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">146</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">y</span> = <span class="cm-variable">np</span>.<span class="cm-property">empty</span>((<span class="cm-variable">bs</span>, <span class="cm-number">28</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">147</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">X</span> = <span class="cm-variable">np</span>.<span class="cm-property">empty</span>((<span class="cm-variable">bs</span>, <span class="cm-variable">IMSIZE</span>, <span class="cm-variable">IMSIZE</span>, <span class="cm-number">3</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">148</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-keyword">for</span> <span class="cm-variable">j</span>, (<span class="cm-variable">k</span>, <span class="cm-variable">v</span>) <span class="cm-keyword">in</span> <span class="cm-builtin">enumerate</span>(<span class="cm-variable">items</span>[<span class="cm-variable">i</span> <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>: (<span class="cm-variable">i</span> <span class="cm-operator">+</span> <span class="cm-number">1</span>) <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>]):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">149</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">y</span>[<span class="cm-variable">j</span>] = <span class="cm-variable">v</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">150</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">img</span> = <span class="cm-variable">img_to_array</span>(<span class="cm-variable">load_img</span>(<span class="cm-variable">join</span>(<span class="cm-variable">img_dir</span>, <span class="cm-variable">k</span>))) <span class="cm-operator">/</span> <span class="cm-number">255</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">151</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">h</span>, <span class="cm-variable">w</span> = <span class="cm-variable">img</span>.<span class="cm-property">shape</span>[:<span class="cm-number">2</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">152</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">X</span>[<span class="cm-variable">j</span>] = <span class="cm-variable">resize</span>(<span class="cm-variable">img</span>, (<span class="cm-variable">IMSIZE</span>, <span class="cm-variable">IMSIZE</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">153</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">0</span>::<span class="cm-number">2</span>] = <span class="cm-number">2</span> <span class="cm-operator">*</span> (<span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">0</span>::<span class="cm-number">2</span>] <span class="cm-operator">-</span> <span class="cm-variable">h</span> <span class="cm-operator">/</span> <span class="cm-number">2</span>) <span class="cm-operator">/</span> <span class="cm-variable">h</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">154</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">1</span>::<span class="cm-number">2</span>] = <span class="cm-number">2</span> <span class="cm-operator">*</span> (<span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">1</span>::<span class="cm-number">2</span>] <span class="cm-operator">-</span> <span class="cm-variable">w</span> <span class="cm-operator">/</span> <span class="cm-number">2</span>) <span class="cm-operator">/</span> <span class="cm-variable">w</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">155</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">model</span>.<span class="cm-property">fit</span>(<span class="cm-variable">X</span>, <span class="cm-variable">y</span>, <span class="cm-variable">batch_size</span>=<span class="cm-number">100</span>, <span class="cm-variable">validation_split</span>=<span class="cm-number">0.2</span>)</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">156</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">157</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">158</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation"><span class="cm-keyword">def</span> <span class="cm-def">detect</span>(<span class="cm-variable">model</span>, <span class="cm-variable">img_dir</span>):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">159</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">160</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">fnames</span> = <span class="cm-variable">glob</span>(<span class="cm-variable">join</span>(<span class="cm-variable">img_dir</span>, <span class="cm-string">'*'</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">161</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">y_dict</span> = <span class="cm-builtin">dict</span>()</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">162</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-variable">mega_bs</span> = <span class="cm-number">1000</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">163</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-keyword">for</span> <span class="cm-variable">i</span> <span class="cm-keyword">in</span> <span class="cm-builtin">range</span>(<span class="cm-builtin">int</span>(<span class="cm-variable">np</span>.<span class="cm-property">ceil</span>(<span class="cm-builtin">len</span>(<span class="cm-variable">fnames</span>) <span class="cm-operator">/</span> <span class="cm-variable">mega_bs</span>))):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">164</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">bs</span> = <span class="cm-builtin">min</span>(<span class="cm-builtin">len</span>(<span class="cm-variable">fnames</span>) <span class="cm-operator">-</span> <span class="cm-variable">i</span> <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>, <span class="cm-variable">mega_bs</span>)</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">165</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">sz</span> = <span class="cm-variable">np</span>.<span class="cm-property">empty</span>((<span class="cm-variable">bs</span>, <span class="cm-number">2</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">166</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">X</span> = <span class="cm-variable">np</span>.<span class="cm-property">empty</span>((<span class="cm-variable">bs</span>, <span class="cm-variable">IMSIZE</span>, <span class="cm-variable">IMSIZE</span>, <span class="cm-number">3</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">167</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-keyword">for</span> <span class="cm-variable">j</span>, <span class="cm-variable">name</span> <span class="cm-keyword">in</span> <span class="cm-builtin">enumerate</span>(<span class="cm-variable">fnames</span>[<span class="cm-variable">i</span> <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>: (<span class="cm-variable">i</span> <span class="cm-operator">+</span> <span class="cm-number">1</span>) <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>]):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">168</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">img</span> = <span class="cm-variable">img_to_array</span>(<span class="cm-variable">load_img</span>(<span class="cm-variable">name</span>)) <span class="cm-operator">/</span> <span class="cm-number">255</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">169</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">sz</span>[<span class="cm-variable">j</span>] = <span class="cm-variable">img</span>.<span class="cm-property">shape</span>[:<span class="cm-number">2</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">170</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">X</span>[<span class="cm-variable">j</span>] = <span class="cm-variable">resize</span>(<span class="cm-variable">img</span>, (<span class="cm-variable">IMSIZE</span>, <span class="cm-variable">IMSIZE</span>))</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">171</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">172</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-variable">y</span> = <span class="cm-variable">model</span>.<span class="cm-property">predict</span>(<span class="cm-variable">X</span>, <span class="cm-variable">batch_size</span>=<span class="cm-number">100</span>)</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">173</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">174</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">        <span class="cm-keyword">for</span> <span class="cm-variable">j</span>, <span class="cm-variable">name</span> <span class="cm-keyword">in</span> <span class="cm-builtin">enumerate</span>(<span class="cm-variable">fnames</span>[<span class="cm-variable">i</span> <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>: (<span class="cm-variable">i</span> <span class="cm-operator">+</span> <span class="cm-number">1</span>) <span class="cm-operator">*</span> <span class="cm-variable">mega_bs</span>]):</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">175</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">h</span>, <span class="cm-variable">w</span> = <span class="cm-variable">sz</span>[<span class="cm-variable">j</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">176</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">0</span>::<span class="cm-number">2</span>] = <span class="cm-number">2</span> <span class="cm-operator">*</span> (<span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">0</span>::<span class="cm-number">2</span>] <span class="cm-operator">-</span> <span class="cm-variable">h</span> <span class="cm-operator">/</span> <span class="cm-number">2</span>) <span class="cm-operator">/</span> <span class="cm-variable">h</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">177</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">1</span>::<span class="cm-number">2</span>] = <span class="cm-number">2</span> <span class="cm-operator">*</span> (<span class="cm-variable">y</span>[<span class="cm-variable">j</span>, <span class="cm-number">1</span>::<span class="cm-number">2</span>] <span class="cm-operator">-</span> <span class="cm-variable">w</span> <span class="cm-operator">/</span> <span class="cm-number">2</span>) <span class="cm-operator">/</span> <span class="cm-variable">w</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">178</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            <span class="cm-variable">y_dict</span>[<span class="cm-variable">split</span>(<span class="cm-variable">name</span>)[<span class="cm-operator">-</span><span class="cm-number">1</span>]] = <span class="cm-variable">y</span>[<span class="cm-variable">j</span>]</span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">179</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">            </span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">180</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation">    <span class="cm-keyword">return</span> <span class="cm-variable">y_dict</span></span></pre></div><div style="position: relative;"><div class="CodeMirror-gutter-wrapper" style="left: -38px;"><div class="CodeMirror-linenumber CodeMirror-gutter-elt" style="left: 0px; width: 25px;">181</div></div><pre class=" CodeMirror-line " role="presentation"><span role="presentation"><span cm-text="">​</span></span></pre></div></div></div></div></div></div><div style="position: absolute; height: 25px; width: 1px; border-bottom: 0px solid transparent; top: 3139px;"></div><div class="CodeMirror-gutters" style="height: 3164px; left: 0px;"><div class="CodeMirror-gutter CodeMirror-linenumbers" style="width: 37px;"></div></div></div></div></div>
-</div>
-
-
-</div>
-
-
-
-
-
-
+    model.add(Conv2D(64, (2, 2)))
+    model.add(Activation('relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
     
+    model.add(Conv2D(128, (2, 2)))
+    model.add(Activation('relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    
+    model.add(Flatten())
+    
+    model.add(Dense(1000))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(1000))
+    model.add(Activation('relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(28))
+    
+    return model
 
+def cosine_lr(start, stop, epochs, n):
+    epochs /= n
+    res = stop + (start - stop) / 2 * (1  + np.cos(np.linspace(0, epochs, epochs) * np.pi / epochs))
+    res = np.concatenate([res for i in range(n)])
+    return res
 
-<script src="detection_files/main.js" type="text/javascript" charset="utf-8"></script>
-
-
-<script type="text/javascript">
-  function _remove_token_from_url() {
-    if (window.location.search.length <= 1) {
-      return;
-    }
-    var search_parameters = window.location.search.slice(1).split('&');
-    for (var i = 0; i < search_parameters.length; i++) {
-      if (search_parameters[i].split('=')[0] === 'token') {
-        // remote token from search parameters
-        search_parameters.splice(i, 1);
-        var new_search = '';
-        if (search_parameters.length) {
-          new_search = '?' + search_parameters.join('&');
-        }
-        var new_url = window.location.origin + 
-                      window.location.pathname + 
-                      new_search + 
-                      window.location.hash;
-        window.history.replaceState({}, "", new_url);
-        return;
-      }
-    }
-  }
-  _remove_token_from_url();
-</script>
-
-
-</body></html>
+def train_detector(y_dict, img_dir, fast_train=True):
+    
+    model = CNN()
+    model.compile(loss='mse', optimizer='adam')
+    
+    mega_bs = 1000
+    items = list(y_dict.items())
+    for i in range(int(np.ceil(len(y_dict) / mega_bs))):
+        bs = min(len(y_dict) - i * mega_bs, mega_bs)
+        y = np.empty((bs, 28))
+        X = np.empty((bs, IMSIZE, IMSIZE, 3))
+        for j, (k, v) in enumerate(items[i * mega_bs: (i + 1) * mega_bs]):
+            y[j] = v
+            img = img_to_array(load_img(join(img_dir, k))) / 255
+            h, w = img.shape[:2]
+            X[j] = resize(img, (IMSIZE, IMSIZE))
+            y[j, 0::2] = 2 * (y[j, 0::2] - h / 2) / h
+            y[j, 1::2] = 2 * (y[j, 1::2] - w / 2) / w
+        model.fit(X, y, batch_size=100, validation_split=0.2)
+        
+    
+def detect(model, img_dir):
+    
+    fnames = glob(join(img_dir, '*'))
+    y_dict = dict()
+    mega_bs = 1000
+    for i in range(int(np.ceil(len(fnames) / mega_bs))):
+        bs = min(len(fnames) - i * mega_bs, mega_bs)
+        sz = np.empty((bs, 2))
+        X = np.empty((bs, IMSIZE, IMSIZE, 3))
+        for j, name in enumerate(fnames[i * mega_bs: (i + 1) * mega_bs]):
+            img = img_to_array(load_img(name)) / 255
+            sz[j] = img.shape[:2]
+            X[j] = resize(img, (IMSIZE, IMSIZE))
+            
+        y = model.predict(X, batch_size=100)
+        
+        for j, name in enumerate(fnames[i * mega_bs: (i + 1) * mega_bs]):
+            h, w = sz[j]
+            y[j, 0::2] = 2 * (y[j, 0::2] - h / 2) / h
+            y[j, 1::2] = 2 * (y[j, 1::2] - w / 2) / w
+            y_dict[split(name)[-1]] = y[j]
+            
+    return y_dict
