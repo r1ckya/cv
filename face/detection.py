@@ -173,8 +173,8 @@ def detect(model, img_dir):
         
         for j, name in enumerate(fnames[i * mega_bs: (i + 1) * mega_bs]):
             h, w = sz[j]
-            y[j, 0::2] = 2 * (y[j, 0::2] - h / 2) / h
-            y[j, 1::2] = 2 * (y[j, 1::2] - w / 2) / w
+            y[j, 0::2] = y[j, 0::2] * h / 2 + h / 2
+            y[j, 1::2] = y[j, 1::2] * w / 2 + w / 2
             y_dict[split(name)[-1]] = y[j]
             
     return y_dict
